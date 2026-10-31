@@ -80,12 +80,12 @@ class AccessibilityTranslationService : AccessibilityService(),
 
     private fun configureEngine() {
         if (!::prefs.isInitialized || !::overlay.isInitialized) return
-        val language = prefs.getString("source", "en") ?: "en"
+        val language = prefs.getString("source", "auto") ?: "auto"
         if (language == activeLanguage && engine != null) return
         activeLanguage = language
         engine?.close()
         overlay.clear()
-        engine = AccessibilityTranslator(language,
+        engine = AccessibilityTranslator(
             onResult = { if (!paused && ::overlay.isInitialized) overlay.show(it) },
             onStatus = { message -> status = message; updateBubbleDescription() })
         scheduleScan()
@@ -117,7 +117,7 @@ class AccessibilityTranslationService : AccessibilityService(),
         }
         currentPackage = pkg
         val nodes = ArrayDeque<AccessibilityNodeInfo>()
-        val regions = ArrayList<Pair<String, PixelBox>>()
+        val regions = ArrayList<SourceRegion>()
         val seen = HashSet<String>()
         nodes.add(root)
         var visited = 0
@@ -132,8 +132,11 @@ class AccessibilityTranslationService : AccessibilityService(),
                 val source = AccessibleTextFilter.normalize(
                     node.text?.toString(), node.isPassword, node.isEditable, box)
                 if (source != null) {
-                    val key = source + ":" + rect.left + ":" + rect.top
-                    if (seen.add(key)) regions.add(source to box)
+                    val detected = SourceLanguageDetector.select(source, activeLanguage)
+                    if (detected != null) {
+                        val key = detected + ":" + source + ":" + rect.left + ":" + rect.top
+                        if (seen.add(key)) regions.add(SourceRegion(source, detected, box))
+                    }
                 }
                 for (i in 0 until node.childCount) {
                     try { node.getChild(i)?.let(nodes::add) } catch (_: Exception) {}

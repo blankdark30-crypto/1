@@ -13,10 +13,15 @@ import android.widget.TextView
 import android.widget.Toast
 
 class MainActivity : Activity() {
-    private val codes = listOf("en", "ja", "ko")
+    private val codes = listOf("auto", "en", "ja", "ko")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val prefs = getSharedPreferences("config", MODE_PRIVATE)
+        if (!prefs.getBoolean("source_auto_migrated_031", false)) {
+            // v0.3 silently defaulted to English. Reset once so updates start in auto mode.
+            prefs.edit().putString("source", "auto")
+                .putBoolean("source_auto_migrated_031", true).apply()
+        }
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(24), dp(42), dp(24), dp(24))
@@ -30,13 +35,13 @@ class MainActivity : Activity() {
                 setPadding(0, dp(6), 0, dp(12))
             })
         }
-        label("螢幕原位翻譯 v0.3", 26f)
+        label("螢幕原位翻譯 v0.3.1", 26f)
         label("無需螢幕分享。第一次必須手動開啟 Android 無障礙服務，啟用後自動辨識其他 App 提供的介面文字並翻譯。圖片、遊戲畫面與影片字幕不保證可辨識。", 15f)
-        label("來源語言", 16f)
+        label("來源語言（預設自動辨識；譯為繁體中文）", 16f)
         val spinner = Spinner(this).apply {
             adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item,
-                listOf("英文 English", "日文 日本語", "韓文 한국어"))
-            setSelection(codes.indexOf(prefs.getString("source", "en")).coerceAtLeast(0))
+                listOf("自動偵測英／日／韓", "英文 English", "日文 日本語", "韓文 한국어"))
+            setSelection(codes.indexOf(prefs.getString("source", "auto")).coerceAtLeast(0))
         }
         root.addView(spinner)
         root.addView(Button(this).apply {
@@ -56,6 +61,7 @@ class MainActivity : Activity() {
                 startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
             }
         })
+        label("已經是中文的文字不會重複翻譯。純漢字日文可能因無法和中文區分而被略過。請先用英文網頁測試。", 14f)
         label("啟用後：開啟其他 App 即自動翻譯；點懸浮球暫停／恢復；長按懸浮球關閉服務。若服務沒有出現，請回到無障礙設定確認已啟用。", 14f)
         setContentView(root)
     }

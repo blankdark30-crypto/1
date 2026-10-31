@@ -6,83 +6,99 @@ import com.google.mlkit.nl.translate.Translation
 import com.google.mlkit.nl.translate.Translator
 import com.google.mlkit.nl.translate.TranslatorOptions
 
-/** Per-session, in-memory translations. No screenshots, no disk persistence, no text uploads. */
+/**
+ * Routes each visible source line to the matching local translator, downloading models
+ * on demand. UI-only Chinese strings never enter this class. No network text upload.
+ */
 internal class AccessibilityTranslator(
-    language: String,
     private val onResult: (List<TranslatedRegion>) -> Unit,
     private val onStatus: (String) -> Unit
 ) {
-    private val translator: Translator = Translation.getClient(
-        TranslatorOptions.Builder()
-            .setSourceLanguage(when (language) {
-                "ja" -> TranslateLanguage.JAPANESE
-                "ko" -> TranslateLanguage.KOREAN
-                else -> TranslateLanguage.ENGLISH
-            })
-            .setTargetLanguage(TranslateLanguage.CHINESE)
-            .build()
-    )
-    private val cache = object : LinkedHashMap<String, String>(160, 0.75f, true) {
+    private val models = mutableMapOf<String, Translator>()
+    private val readyLanguages = mutableSetOf<String>()
+    private val failedLanguages = mutableSetOf<String>()
+    private val cache = object : LinkedHashMap<String, String>(192, .75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>): Boolean =
             size > 250
     }
-    private var latest: List<Pair<String, PixelBox>> = emptyList()
-    private var ready = false
+    private var latest: List<SourceRegion> = emptyList()
     private var busy = false
     private var closed = false
 
-    init {
-        onStatus("正在下載或確認本機翻譯模型")
-        translator.downloadModelIfNeeded()
-            .addOnSuccessListener {
-                if (!closed) {
-                    ready = true
-                    onStatus("本機翻譯已就緒")
-                    publish()
-                    processNext()
-                }
-            }
-            .addOnFailureListener { error ->
-                if (!closed) onStatus("翻譯模型未就緒：" + (error.message ?: "請檢查網路"))
-            }
-    }
-
-    fun submit(regions: List<Pair<String, PixelBox>>) {
+    fun submit(regions: List<SourceRegion>) {
         if (closed) return
         latest = regions.take(18)
         publish()
-        if (ready) processNext()
+        processNext()
     }
+
+    private fun cacheKey(item: SourceRegion): String = item.language + ":" + item.source
 
     private fun publish() {
         if (closed) return
-        val output = latest.mapNotNull { (source, bounds) ->
-            cache[source]?.takeIf { it.isNotBlank() }?.let {
-                TranslatedRegion(source, it, bounds)
+        onResult(latest.mapNotNull { item ->
+            cache[cacheKey(item)]?.takeIf { it.isNotBlank() }?.let {
+                TranslatedRegion(item.source, it, item.box)
             }
-        }
-        onResult(output)
+        })
     }
 
     private fun processNext() {
-        if (closed || busy || !ready) return
-        val source = latest.firstOrNull { !cache.containsKey(it.first) }?.first ?: return
+        if (closed || busy) return
+        val item = latest.firstOrNull {
+            it.language !in failedLanguages && !cache.containsKey(cacheKey(it))
+        } ?: return
+        val language = item.language
+        val translator = models.getOrPut(language) {
+            Translation.getClient(
+                TranslatorOptions.Builder()
+                    .setSourceLanguage(
+                        when (language) {
+                            "ja" -> TranslateLanguage.JAPANESE
+                            "ko" -> TranslateLanguage.KOREAN
+                            else -> TranslateLanguage.ENGLISH
+                        }
+                    )
+                    .setTargetLanguage(TranslateLanguage.CHINESE)
+                    .build()
+            )
+        }
         busy = true
-        translator.translate(source)
-            .addOnSuccessListener { result ->
+        if (language !in readyLanguages) {
+            onStatus("準備 " + language + " 翻譯模型；首次需下載")
+            translator.downloadModelIfNeeded()
+                .addOnSuccessListener {
+                    if (!closed) {
+                        readyLanguages.add(language)
+                        busy = false
+                        onStatus(language + " 模型就緒")
+                        processNext()
+                    }
+                }
+                .addOnFailureListener { e ->
+                    if (!closed) {
+                        failedLanguages.add(language)
+                        busy = false
+                        onStatus(language + " 模型下載失敗：" + (e.message ?: "請檢查網路"))
+                        processNext()
+                    }
+                }
+            return
+        }
+        translator.translate(item.source)
+            .addOnSuccessListener { translated ->
                 if (!closed) {
-                    cache[source] = toTraditional(result)
+                    cache[cacheKey(item)] = toTraditional(translated)
                     busy = false
                     publish()
                     processNext()
                 }
             }
-            .addOnFailureListener { error ->
+            .addOnFailureListener { e ->
                 if (!closed) {
-                    // Remember failure for this session, avoiding an infinite retry loop.
-                    cache[source] = ""
+                    cache[cacheKey(item)] = ""
                     busy = false
-                    onStatus("部分文字翻譯失敗：" + (error.message ?: "未知原因"))
+                    onStatus("部分文字翻譯失敗：" + (e.message ?: "未知原因"))
                     publish()
                     processNext()
                 }
@@ -95,9 +111,12 @@ internal class AccessibilityTranslator(
 
     fun close() {
         closed = true
-        ready = false
+        busy = false
         latest = emptyList()
         cache.clear()
-        translator.close()
+        readyLanguages.clear()
+        failedLanguages.clear()
+        models.values.forEach { it.close() }
+        models.clear()
     }
 }
