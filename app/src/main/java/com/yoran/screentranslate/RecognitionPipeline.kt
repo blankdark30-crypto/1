@@ -13,11 +13,11 @@ import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import com.google.mlkit.vision.text.japanese.JapaneseTextRecognizerOptions
 import com.google.mlkit.vision.text.korean.KoreanTextRecognizerOptions
 
-/** No screen image is persisted. OCR and translation inference execute on-device. */
+/** No screenshot persistence. OCR emits line positions; per-language translation runs on-device. */
 internal class RecognitionPipeline(
     sourceLanguage: String,
     private val onStatus: (String) -> Unit,
-    private val onTranslation: (String) -> Unit
+    private val onRegions: (List<TranslatedRegion>, Int, Int) -> Unit
 ) {
     private val recognizer: TextRecognizer = when (sourceLanguage) {
         "ja" -> TextRecognition.getClient(JapaneseTextRecognizerOptions.Builder().build())
@@ -34,51 +34,68 @@ internal class RecognitionPipeline(
             .setTargetLanguage(TranslateLanguage.CHINESE)
             .build()
     )
+    private val cache = object : LinkedHashMap<String, String>(128, .75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>): Boolean = size > 240
+    }
     @Volatile private var ready = false
     @Volatile private var closed = false
-    private var previousSource = ""
 
     init {
-        onStatus("正在準備本機翻譯模型；首次使用需連線下載…")
+        onStatus("正在準備本機模型；首次需下載")
         translator.downloadModelIfNeeded()
-            .addOnSuccessListener {
-                if (!closed) {
-                    ready = true
-                    onStatus("掃描中：切換到想翻譯的畫面")
-                }
-            }
-            .addOnFailureListener { error ->
-                if (!closed) onStatus("模型下載失敗：${error.message ?: "請檢查網路"}")
-            }
+            .addOnSuccessListener { if (!closed) { ready = true; onStatus("模型就緒") } }
+            .addOnFailureListener { if (!closed) onStatus("模型下載失敗：${it.message ?: "請檢查網路"}") }
     }
 
-    /** Ownership of bitmap is transferred here; done always releases capture backpressure. */
+    /** Takes ownership of bitmap. done() must always release capture backpressure. */
     fun recognize(bitmap: Bitmap, done: () -> Unit) {
-        if (closed || !ready) {
-            bitmap.recycle()
-            done()
-            return
-        }
+        if (closed || !ready) { bitmap.recycle(); done(); return }
+        val w = bitmap.width
+        val h = bitmap.height
         try {
             recognizer.process(InputImage.fromBitmap(bitmap, 0))
                 .addOnSuccessListener { result ->
                     bitmap.recycle()
                     if (closed) { done(); return@addOnSuccessListener }
-                    val original = result.text.trim().take(MAX_TEXT_LENGTH)
-                    if (original.isEmpty() || original == previousSource) {
-                        done()
-                        return@addOnSuccessListener
+                    val raw = result.textBlocks.flatMap { it.lines }.mapNotNull { line ->
+                        val box = line.boundingBox ?: return@mapNotNull null
+                        val source = line.text.trim().replace(Regex("\\s+"), " ")
+                        if (source.length < 2 || source.length > 160 ||
+                            source.none { it.isLetter() }) return@mapNotNull null
+                        source to PixelBox(box.left, box.top, box.right, box.bottom)
+                    }.sortedWith(compareBy({ it.second.top }, { it.second.left })).take(MAX_REGIONS)
+
+                    if (raw.isEmpty()) { onRegions(emptyList(), w, h); done(); return@addOnSuccessListener }
+                    val translations = mutableMapOf<String, String>()
+                    fun publish() {
+                        if (!closed) onRegions(raw.mapNotNull { (source, box) ->
+                            translations[source]?.takeIf { it.isNotBlank() }?.let {
+                                TranslatedRegion(source, it, box)
+                            }
+                        }, w, h)
                     }
-                    previousSource = original
-                    translator.translate(original)
-                        .addOnSuccessListener { translated ->
-                            if (!closed) onTranslation(toTraditional(translated))
-                            done()
-                        }
-                        .addOnFailureListener { error ->
-                            if (!closed) onStatus("翻譯失敗：${error.message ?: "未知原因"}")
-                            done()
-                        }
+                    raw.forEach { (source, _) -> cache[source]?.let { translations[source] = it } }
+                    publish() // Even identical text moves in scrolling apps; re-map positions every frame.
+                    val missing = raw.map { it.first }.distinct().filter { it !in translations }
+                    fun translateAt(i: Int) {
+                        if (closed || i >= missing.size) { done(); return }
+                        val source = missing[i]
+                        translator.translate(source)
+                            .addOnSuccessListener { value ->
+                                if (!closed) {
+                                    val translated = toTraditional(value)
+                                    cache[source] = translated
+                                    translations[source] = translated
+                                    publish()
+                                }
+                                translateAt(i + 1)
+                            }
+                            .addOnFailureListener { error ->
+                                if (!closed) onStatus("部分翻譯失敗：${error.message ?: "未知原因"}")
+                                translateAt(i + 1)
+                            }
+                    }
+                    translateAt(0)
                 }
                 .addOnFailureListener { error ->
                     bitmap.recycle()
@@ -99,9 +116,10 @@ internal class RecognitionPipeline(
     fun close() {
         closed = true
         ready = false
+        cache.clear()
         recognizer.close()
         translator.close()
     }
 
-    companion object { private const val MAX_TEXT_LENGTH = 1500 }
+    companion object { private const val MAX_REGIONS = 14 }
 }
