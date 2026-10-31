@@ -40,6 +40,9 @@ class ScreenTranslateService : Service() {
     private lateinit var windowManager: WindowManager
     private var bubble: TextView? = null
     private var bubbleParams: WindowManager.LayoutParams? = null
+    private val regionRenderer by lazy { RegionOverlayRenderer(this, windowManager) }
+    @Volatile private var sampleReady = false
+    private var sampleRunnable: Runnable? = null
     private var translationPanel: LinearLayout? = null
     private var panelBody: TextView? = null
     private var panelHeader: TextView? = null
@@ -248,9 +251,10 @@ class ScreenTranslateService : Service() {
         val currentGeneration = captureGeneration
         isCapturing = true
         bubble?.text = "停"
-        createPanel()
-        translationPanel?.visibility = View.VISIBLE
-        displayStatus("準備擷取畫面…")
+        regionRenderer.clear()
+        sampleReady = false
+        scheduleSample(currentGeneration, 350L)
+        displayStatus("原位翻譯啟動；請使用整個螢幕分享")
         val manager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         try {
             val proj = manager.getMediaProjection(resultCode, resultData)
@@ -278,8 +282,12 @@ class ScreenTranslateService : Service() {
             imageReader = reader
             processor = RecognitionPipeline(sourceLanguage,
                 onStatus = { if (captureGeneration == currentGeneration) displayStatus(it) },
-                onTranslation = {
-                    if (captureGeneration == currentGeneration) displayTranslation(it)
+                onRegions = { regions, w, h ->
+                    if (captureGeneration == currentGeneration && isCapturing) {
+                        if (!regionRenderer.render(regions, w, h)) {
+                            displayStatus("畫面裁切比例與實體螢幕不一致；請選擇整個螢幕分享")
+                        }
+                    }
                 })
             reader.setOnImageAvailableListener({ source ->
                 onImageAvailable(source, currentGeneration)
@@ -299,9 +307,10 @@ class ScreenTranslateService : Service() {
         val image = try { reader.acquireLatestImage() } catch (_: Exception) { null } ?: return
         try {
             val now = SystemClock.elapsedRealtime()
-            if (!isCapturing || generation != captureGeneration ||
+            if (!isCapturing || generation != captureGeneration || !sampleReady ||
                 now - lastReadAt < FRAME_INTERVAL_MS || !processing.compareAndSet(false, true)
             ) return
+            sampleReady = false
             lastReadAt = now
             val plane = image.planes[0]
             val width = image.width
@@ -321,7 +330,14 @@ class ScreenTranslateService : Service() {
                         bitmap.recycle()
                         processing.set(false)
                     } else {
-                        p.recognize(bitmap) { processing.set(false) }
+                        bubble?.visibility = View.VISIBLE
+                        p.recognize(bitmap) {
+                            processing.set(false)
+                            if (generation == captureGeneration && isCapturing) {
+                                regionRenderer.hideForCapture(false)
+                                scheduleSample(generation, FRAME_INTERVAL_MS)
+                            }
+                        }
                     }
                 }
             }
@@ -336,6 +352,11 @@ class ScreenTranslateService : Service() {
     private fun stopCapture(removeForeground: Boolean = true) {
         captureGeneration++
         isCapturing = false
+        sampleReady = false
+        sampleRunnable?.let(mainHandler::removeCallbacks)
+        sampleRunnable = null
+        if (::windowManager.isInitialized) regionRenderer.clear()
+        bubble?.visibility = View.VISIBLE
         bubble?.text = "譯"
         val oldReader = imageReader
         imageReader = null
@@ -359,7 +380,24 @@ class ScreenTranslateService : Service() {
         }
     }
 
+    private fun scheduleSample(generation: Int, delay: Long) {
+        sampleRunnable?.let(mainHandler::removeCallbacks)
+        val runnable = Runnable {
+            if (generation == captureGeneration && isCapturing) {
+                // The compositor receives a window-hidden state *before* the next captured frame.
+                regionRenderer.hideForCapture(true)
+                bubble?.visibility = View.INVISIBLE
+                mainHandler.postDelayed({
+                    if (generation == captureGeneration && isCapturing) sampleReady = true
+                }, 200L)
+            }
+        }
+        sampleRunnable = runnable
+        mainHandler.postDelayed(runnable, delay)
+    }
+
     private fun displayStatus(message: String) = mainHandler.post {
+        bubble?.contentDescription = "螢幕翻譯：$message"
         panelHeader?.text = "螢幕翻譯 · 狀態"
         panelBody?.text = message
     }.let { Unit }
@@ -424,6 +462,7 @@ class ScreenTranslateService : Service() {
     override fun onDestroy() {
         stopCapture(removeForeground = false)
         stopForeground(STOP_FOREGROUND_REMOVE)
+        regionRenderer.clear()
         try { bubble?.let(windowManager::removeView) } catch (_: Exception) {}
         try { translationPanel?.let(windowManager::removeView) } catch (_: Exception) {}
         bubble = null
