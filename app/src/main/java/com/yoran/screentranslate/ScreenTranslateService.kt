@@ -64,7 +64,10 @@ class ScreenTranslateService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_SHOW_BUBBLE -> createBubble()
+            ACTION_SHOW_BUBBLE -> {
+                createBubble()
+                showBubbleForeground()
+            }
             ACTION_START_CAPTURE -> {
                 createBubble()
                 val resultCode = intent.getIntExtra(EXTRA_PROJECTION_RESULT, Activity.RESULT_CANCELED)
@@ -84,7 +87,8 @@ class ScreenTranslateService : Service() {
             }
             ACTION_STOP_CAPTURE -> stopCapture()
             ACTION_SHUTDOWN -> {
-                stopCapture()
+                stopCapture(removeForeground = false)
+                stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
             }
             else -> { }
@@ -228,8 +232,12 @@ class ScreenTranslateService : Service() {
     private fun startCapture(resultCode: Int, resultData: Intent, sourceLanguage: String) {
         // Foreground service must be started before getMediaProjection() on modern Android.
         try {
-            startForeground(NOTIFICATION_ID, captureNotification(),
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
+            if (Build.VERSION.SDK_INT >= 29) {
+                startForeground(NOTIFICATION_ID, captureNotification(),
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
+            } else {
+                startForeground(NOTIFICATION_ID, captureNotification())
+            }
         } catch (e: Exception) {
             displayStatus("前景服務啟動失敗：${e.message ?: "未知原因"}")
             stopSelf()
@@ -345,7 +353,10 @@ class ScreenTranslateService : Service() {
         projectionCallback = null
         processing.set(false)
         translationPanel?.visibility = View.GONE
-        if (removeForeground) stopForeground(STOP_FOREGROUND_REMOVE)
+        if (removeForeground) {
+            if (bubble != null) showBubbleForeground()
+            else stopForeground(STOP_FOREGROUND_REMOVE)
+        }
     }
 
     private fun displayStatus(message: String) = mainHandler.post {
@@ -372,6 +383,31 @@ class ScreenTranslateService : Service() {
             cornerRadius = radiusDp * resources.displayMetrics.density
         }
 
+    private fun showBubbleForeground() {
+        if (bubble == null) return
+        try {
+            val close = Intent(this, ScreenTranslateService::class.java).apply {
+                action = ACTION_SHUTDOWN
+            }
+            val pending = PendingIntent.getService(this, 1, close,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+            val idle = Notification.Builder(this, CHANNEL_ID)
+                .setContentTitle("螢幕翻譯球待命")
+                .setContentText("懸浮球已開啟；點擊可授權螢幕翻譯")
+                .setSmallIcon(android.R.drawable.ic_menu_search)
+                .setOngoing(true)
+                .addAction(Notification.Action.Builder(null, "關閉懸浮球", pending).build())
+                .build()
+            if (Build.VERSION.SDK_INT >= 34) {
+                startForeground(NOTIFICATION_ID, idle, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+            } else {
+                startForeground(NOTIFICATION_ID, idle)
+            }
+        } catch (_: Exception) {
+            // Some device ROMs may restrict this FGS type; the bubble can be evicted.
+        }
+    }
+
     private fun captureNotification(): Notification {
         val stop = Intent(this, ScreenTranslateService::class.java).apply { action = ACTION_STOP_CAPTURE }
         val pending = PendingIntent.getService(this, 0, stop,
@@ -386,7 +422,8 @@ class ScreenTranslateService : Service() {
     }
 
     override fun onDestroy() {
-        stopCapture()
+        stopCapture(removeForeground = false)
+        stopForeground(STOP_FOREGROUND_REMOVE)
         try { bubble?.let(windowManager::removeView) } catch (_: Exception) {}
         try { translationPanel?.let(windowManager::removeView) } catch (_: Exception) {}
         bubble = null
