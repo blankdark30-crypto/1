@@ -1,15 +1,10 @@
 package com.yoran.screentranslate
 
-import android.Manifest
 import android.app.Activity
 import android.content.Intent
-import android.media.projection.MediaProjectionManager
-import android.net.Uri
-import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.view.View
-import android.view.WindowInsets
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.LinearLayout
@@ -18,137 +13,51 @@ import android.widget.TextView
 import android.widget.Toast
 
 class MainActivity : Activity() {
-    private val requestCaptureCode = 102
-    private val languages = listOf("en", "ja", "ko")
-    private var sourceSpinner: Spinner? = null
-
+    private val codes = listOf("en", "ja", "ko")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val prefs = getSharedPreferences("config", MODE_PRIVATE)
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            setPadding(dp(24), dp(42), dp(24), dp(24))
             setBackgroundColor(0xFFF7F7FB.toInt())
-            setPadding(dp(24), dp(28), dp(24), dp(24))
         }
-        if (Build.VERSION.SDK_INT >= 30) {
-            root.setOnApplyWindowInsetsListener { v, insets ->
-                val sys = insets.getInsets(WindowInsets.Type.systemBars())
-                v.setPadding(dp(24), sys.top + dp(20), dp(24), sys.bottom + dp(20))
-                insets
-            }
+        fun label(t: String, size: Float) {
+            root.addView(TextView(this).apply {
+                text = t
+                textSize = size
+                setTextColor(0xFF172033.toInt())
+                setPadding(0, dp(6), 0, dp(12))
+            })
         }
-        root.addView(TextView(this).apply {
-            text = "螢幕即時翻譯球"
-            textSize = 27f
-            setTextColor(0xFF111827.toInt())
-        })
-        root.addView(TextView(this).apply {
-            text = "跨 App 擷取文字 → 本機辨識 → 逐行原位翻譯。每次重新開始擷取都需經 Android 授權。"
-            textSize = 15f
-            setTextColor(0xFF4B5563.toInt())
-            setPadding(0, dp(14), 0, dp(28))
-        })
-        root.addView(TextView(this).apply {
-            text = "來源文字語言（翻譯為繁體中文）"
-            textSize = 16f
-            setTextColor(0xFF111827.toInt())
-        })
+        label("螢幕原位翻譯 v0.3", 26f)
+        label("無需螢幕分享。第一次必須手動開啟 Android 無障礙服務，啟用後自動辨識其他 App 提供的介面文字並翻譯。圖片、遊戲畫面與影片字幕不保證可辨識。", 15f)
+        label("來源語言", 16f)
         val spinner = Spinner(this).apply {
-            adapter = ArrayAdapter(
-                this@MainActivity,
-                android.R.layout.simple_spinner_dropdown_item,
-                listOf("英文 English", "日文 日本語", "韓文 한국어")
-            )
-            val current = getSharedPreferences("config", MODE_PRIVATE)
-                .getString("source", "en") ?: "en"
-            setSelection(languages.indexOf(current).coerceAtLeast(0))
+            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item,
+                listOf("英文 English", "日文 日本語", "韓文 한국어"))
+            setSelection(codes.indexOf(prefs.getString("source", "en")).coerceAtLeast(0))
         }
-        sourceSpinner = spinner
         root.addView(spinner)
-        root.addView(actionButton("① 開啟懸浮球") { showBubble() })
-        root.addView(actionButton("② 開始原位翻譯") { requestProjection() })
-        root.addView(actionButton("暫停翻譯（保留懸浮球）") {
-            controlService(ScreenTranslateService.ACTION_STOP_CAPTURE)
+        root.addView(Button(this).apply {
+            text = "儲存語言"
+            setOnClickListener {
+                prefs.edit().putString("source", codes[spinner.selectedItemPosition]).apply()
+                Toast.makeText(this@MainActivity, "已更新語言", Toast.LENGTH_SHORT).show()
+            }
         })
-        root.addView(actionButton("關閉懸浮球及掃描") {
-            controlService(ScreenTranslateService.ACTION_SHUTDOWN)
+        label("權限與隱私說明", 17f)
+        label("本功能將使用無障礙服務讀取其他 App 可存取的畫面文字、介面結構與位置，以便就地翻譯。會排除可辨識的密碼欄及可編輯輸入欄。文字在本機辨識與翻譯，首次需下載語言模型；不儲存截圖、不將文字送到本程式伺服器。請勿在顯示病患、銀行或其他敏感資料時使用。", 14f)
+        root.addView(Button(this).apply {
+            text = "我了解上述存取用途，前往無障礙設定啟用"
+            setOnClickListener {
+                prefs.edit().putBoolean("accessibility_disclosure_accepted", true)
+                    .putString("source", codes[spinner.selectedItemPosition]).apply()
+                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            }
         })
-        root.addView(TextView(this).apply {
-            text = "請在螢幕分享提示選擇「整個螢幕」以避免座標錯位。操作：點擊懸浮球切換掃描；拖曳移動；長按完全關閉。首次翻譯需要下載語言模型。\n\n隱私：不保存畫面、不錄音、不將截圖送至自設伺服器；金融、密碼等保護畫面可能無法擷取。"
-            textSize = 13f
-            setTextColor(0xFF6B7280.toInt())
-            setPadding(0, dp(28), 0, 0)
-        })
+        label("啟用後：開啟其他 App 即自動翻譯；點懸浮球暫停／恢復；長按懸浮球關閉服務。若服務沒有出現，請回到無障礙設定確認已啟用。", 14f)
         setContentView(root)
-        if (intent.getBooleanExtra(EXTRA_REQUEST_CAPTURE, false)) {
-            root.post { requestProjection() }
-        }
-        if (Build.VERSION.SDK_INT >= 33 &&
-            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
-            android.content.pm.PackageManager.PERMISSION_GRANTED
-        ) requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 101)
     }
-
-    override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-        setIntent(intent)
-        if (intent.getBooleanExtra(EXTRA_REQUEST_CAPTURE, false)) {
-            window.decorView.post { requestProjection() }
-        }
-    }
-
-    private fun actionButton(label: String, click: () -> Unit): View =
-        Button(this).apply {
-            text = label
-            isAllCaps = false
-            setOnClickListener { click() }
-        }
-
-    private fun showBubble(): Boolean {
-        if (!Settings.canDrawOverlays(this)) {
-            Toast.makeText(this, "請先授權顯示在其他 App 上層", Toast.LENGTH_LONG).show()
-            startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                Uri.parse("package:$packageName")))
-            return false
-        }
-        startForegroundService(Intent(this, ScreenTranslateService::class.java).apply {
-            action = ScreenTranslateService.ACTION_SHOW_BUBBLE
-        })
-        return true
-    }
-
-    private fun requestProjection() {
-        if (!showBubble()) return
-        val source = languages[sourceSpinner?.selectedItemPosition?.coerceIn(0, 2) ?: 0]
-        getSharedPreferences("config", MODE_PRIVATE).edit().putString("source", source).apply()
-        val manager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        @Suppress("DEPRECATION")
-        startActivityForResult(manager.createScreenCaptureIntent(), requestCaptureCode)
-    }
-
-    @Deprecated("Platform callback used for a dependency-light MVP")
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode != requestCaptureCode) return
-        if (resultCode != RESULT_OK || data == null) {
-            Toast.makeText(this, "未授權螢幕擷取，翻譯未啟動", Toast.LENGTH_SHORT).show()
-            return
-        }
-        val source = getSharedPreferences("config", MODE_PRIVATE).getString("source", "en") ?: "en"
-        val launch = Intent(this, ScreenTranslateService::class.java).apply {
-            action = ScreenTranslateService.ACTION_START_CAPTURE
-            putExtra(ScreenTranslateService.EXTRA_PROJECTION_RESULT, resultCode)
-            putExtra(ScreenTranslateService.EXTRA_PROJECTION_DATA, data)
-            putExtra(ScreenTranslateService.EXTRA_SOURCE_LANGUAGE, source)
-        }
-        startForegroundService(launch)
-        Toast.makeText(this, "翻譯啟動中，可切換至其他 App", Toast.LENGTH_SHORT).show()
-    }
-
-    private fun controlService(action: String) {
-        startService(Intent(this, ScreenTranslateService::class.java).apply { this.action = action })
-    }
-
-    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
-
-    companion object { const val EXTRA_REQUEST_CAPTURE = "request_capture" }
+    private fun dp(x: Int) = (x * resources.displayMetrics.density).toInt()
 }
