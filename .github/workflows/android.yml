@@ -15,7 +15,8 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - uses: android-actions/setup-android@v3
+      # GitHub hosted ubuntu-latest already ships Android command line tools.
+      # Avoid setup-android@v3 invoking the removed legacy 'tools' SDK package.
       - name: Install SDK 36
         run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
       - uses: gradle/actions/setup-gradle@v4
