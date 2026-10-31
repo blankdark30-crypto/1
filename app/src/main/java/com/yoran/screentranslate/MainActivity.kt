@@ -110,7 +110,9 @@ class MainActivity : Activity() {
                 Uri.parse("package:$packageName")))
             return false
         }
-        controlService(ScreenTranslateService.ACTION_SHOW_BUBBLE)
+        startForegroundService(Intent(this, ScreenTranslateService::class.java).apply {
+            action = ScreenTranslateService.ACTION_SHOW_BUBBLE
+        })
         return true
     }
 
