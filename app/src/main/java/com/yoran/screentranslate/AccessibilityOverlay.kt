@@ -28,6 +28,11 @@ internal class AccessibilityOverlay(
 ) {
     private val translationView = TranslationSurface(context)
     private var attached = false
+    val viewWidth: Int get() = translationView.width
+    val viewHeight: Int get() = translationView.height
+    fun hideForCapture(hidden: Boolean) {
+        translationView.visibility = if (hidden) View.INVISIBLE else View.VISIBLE
+    }
 
     fun attach() {
         if (attached) return

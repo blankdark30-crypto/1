@@ -3,6 +3,9 @@ package com.yoran.screentranslate
 import android.accessibilityservice.AccessibilityService
 import android.content.Context
 import android.content.SharedPreferences
+import android.graphics.Bitmap
+import android.os.Build
+import android.view.Display
 import android.graphics.Color
 import android.graphics.Rect
 import android.graphics.PixelFormat
@@ -37,12 +40,19 @@ class AccessibilityTranslationService : AccessibilityService(),
     private var status = "等待文字"
     private var currentPackage = ""
     private var privacyApproved = false
+    private var visualOcrEnabled = false
+    private var screenBusy = false
+    private var screenshotGeneration = 0
+    private var visualOcr: VisualScreenOcr? = null
+    private var activeForegroundPackage = ""
 
     override fun onServiceConnected() {
         super.onServiceConnected()
         prefs = getSharedPreferences("config", Context.MODE_PRIVATE)
         prefs.registerOnSharedPreferenceChangeListener(this)
         privacyApproved = prefs.getBoolean("accessibility_disclosure_accepted", false)
+        visualOcrEnabled = Build.VERSION.SDK_INT >= 30 &&
+            prefs.getBoolean("visual_screen_ocr_consent", false)
         if (!privacyApproved) {
             // Enabling the service directly in Android Settings is not in-app consent.
             disableSelf()
@@ -53,6 +63,7 @@ class AccessibilityTranslationService : AccessibilityService(),
         try {
             overlay.attach()
             createBubble()
+            visualOcr = if (Build.VERSION.SDK_INT >= 30) VisualScreenOcr() else null
             configureEngine()
             scheduleScan()
         } catch (_: Exception) {
@@ -65,11 +76,12 @@ class AccessibilityTranslationService : AccessibilityService(),
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null || paused || !privacyApproved || !::overlay.isInitialized) return
         val pkg = event.packageName?.toString().orEmpty()
-        if (pkg == packageName || pkg == "com.android.systemui" ||
-            pkg.contains("permissioncontroller") || pkg == "com.android.settings") {
+        if (blockedPackage(pkg)) {
+            activeForegroundPackage = pkg
             overlay.clear()
             return
         }
+        activeForegroundPackage = pkg
         if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
             event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED ||
             event.eventType == AccessibilityEvent.TYPE_VIEW_SCROLLED ||
@@ -92,7 +104,7 @@ class AccessibilityTranslationService : AccessibilityService(),
     }
 
     private fun scheduleScan() {
-        if (scheduled || paused || !::overlay.isInitialized) return
+        if (scheduled || paused || screenBusy || !::overlay.isInitialized) return
         scheduled = true
         val elapsed = SystemClock.elapsedRealtime() - lastScan
         handler.postDelayed({
@@ -110,12 +122,25 @@ class AccessibilityTranslationService : AccessibilityService(),
             return
         }
         val pkg = root.packageName?.toString().orEmpty()
-        if (pkg == packageName || pkg == "com.android.systemui" ||
-            pkg.contains("permissioncontroller") || pkg == "com.android.settings") {
+        if (blockedPackage(pkg) || (activeForegroundPackage.isNotEmpty() &&
+                blockedPackage(activeForegroundPackage))) {
             overlay.clear()
             return
         }
         currentPackage = pkg
+        if (visualOcrEnabled && Build.VERSION.SDK_INT >= 30) {
+            if (hasFocusedSensitiveInput(root)) {
+                overlay.clear()
+                scheduleVisualRefresh()
+                return
+            }
+            captureVisualText(pkg)
+            return
+        }
+        scanTextNodes(root)
+    }
+
+    private fun scanTextNodes(root: AccessibilityNodeInfo) {
         val nodes = ArrayDeque<AccessibilityNodeInfo>()
         val regions = ArrayList<SourceRegion>()
         val seen = HashSet<String>()
@@ -146,6 +171,127 @@ class AccessibilityTranslationService : AccessibilityService(),
             // Accessibility hierarchies may disappear as windows change.
         }
         engine?.submit(regions)
+    }
+
+
+    private fun blockedPackage(value: String): Boolean =
+        value.isBlank() || value == packageName || value == "com.android.systemui" ||
+            value == "com.android.settings" || value.contains("permissioncontroller") ||
+            value.startsWith("com.google.android.permissioncontroller")
+
+    private fun hasFocusedSensitiveInput(root: AccessibilityNodeInfo): Boolean {
+        val nodes = ArrayDeque<AccessibilityNodeInfo>()
+        nodes.add(root)
+        var visited = 0
+        try {
+            while (nodes.isNotEmpty() && visited < 120) {
+                val node = nodes.removeFirst()
+                visited++
+                if (node.isPassword || (node.isEditable && node.isFocused)) return true
+                for (i in 0 until node.childCount) {
+                    node.getChild(i)?.let { nodes.add(it) }
+                }
+            }
+        } catch (_: Exception) { return true } // Fail closed on permission/transition errors.
+        return false
+    }
+
+    private fun captureVisualText(packageAtStart: String) {
+        if (Build.VERSION.SDK_INT < 30 || screenBusy || paused) return
+        screenBusy = true
+        val generation = ++screenshotGeneration
+        overlay.hideForCapture(true)
+        bubble?.visibility = View.INVISIBLE
+        // Allow the system compositor to present a frame without our overlay.
+        handler.postDelayed({
+            if (!isCaptureValid(generation, packageAtStart)) {
+                finishVisualCapture(generation)
+                return@postDelayed
+            }
+            try {
+                takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor,
+                    object : AccessibilityService.TakeScreenshotCallback {
+                        override fun onSuccess(result: AccessibilityService.ScreenshotResult) {
+                            if (!isCaptureValid(generation, packageAtStart)) {
+                                result.hardwareBuffer.close()
+                                finishVisualCapture(generation)
+                                return
+                            }
+                            val bitmap: Bitmap? = try {
+                                val buffer = result.hardwareBuffer
+                                try {
+                                    val wrapped = Bitmap.wrapHardwareBuffer(buffer, result.colorSpace)
+                                    wrapped?.copy(Bitmap.Config.ARGB_8888, false)
+                                } finally {
+                                    buffer.close()
+                                }
+                            } catch (_: Exception) { null }
+                            if (bitmap == null) {
+                                updateStatus("無法讀取畫面像素")
+                                finishVisualCapture(generation)
+                                return
+                            }
+                            val recognizer = visualOcr
+                            if (recognizer == null) {
+                                bitmap.recycle()
+                                finishVisualCapture(generation)
+                                return
+                            }
+                            recognizer.recognize(bitmap, activeLanguage) { regions, w, h ->
+                                if (isCaptureValid(generation, packageAtStart)) {
+                                    val scaled = regions.mapNotNull { item ->
+                                        val mapped = RegionCoordinates.map(
+                                            item.box, w, h, overlay.viewWidth, overlay.viewHeight)
+                                        mapped?.let { item.copy(box = it) }
+                                    }
+                                    engine?.submit(scaled)
+                                    if (scaled.isEmpty()) updateStatus("畫面 OCR 未辨識到文字，請檢查遊戲字體或安全限制")
+                                    else updateStatus("畫面辨識 " + scaled.size + " 行，翻譯中")
+                                }
+                                finishVisualCapture(generation)
+                            }
+                        }
+
+                        override fun onFailure(errorCode: Int) {
+                            if (isCaptureValid(generation, packageAtStart)) {
+                                updateStatus("畫面截取失敗（代碼 " + errorCode + "）")
+                                // If OEM blocks screenshots, retain node-based translation.
+                                rootInActiveWindow?.let { scanTextNodes(it) }
+                            }
+                            finishVisualCapture(generation)
+                        }
+                    })
+            } catch (error: Exception) {
+                updateStatus("無障礙截圖不可用：" + (error.message ?: "請重新啟用服務"))
+                finishVisualCapture(generation)
+            }
+        }, 180L)
+    }
+
+    private fun isCaptureValid(generation: Int, pkg: String): Boolean =
+        generation == screenshotGeneration && !paused && visualOcrEnabled &&
+            !blockedPackage(activeForegroundPackage) &&
+            activeForegroundPackage == pkg && ::overlay.isInitialized
+
+    private fun updateStatus(value: String) {
+        status = value
+        updateBubbleDescription()
+    }
+
+    private fun finishVisualCapture(generation: Int) {
+        // If paused, don't resume hidden translation overlays.
+        if (generation != screenshotGeneration) return
+        screenBusy = false
+        if (::overlay.isInitialized) overlay.hideForCapture(false)
+        bubble?.visibility = View.VISIBLE
+        if (!paused && visualOcrEnabled) scheduleVisualRefresh()
+    }
+
+    private fun scheduleVisualRefresh() {
+        if (paused || !visualOcrEnabled) return
+        handler.postDelayed({
+            if (!paused && visualOcrEnabled && !screenBusy) scheduleScan()
+        }, 2200L)
     }
 
     private fun createBubble() {
@@ -230,7 +376,13 @@ class AccessibilityTranslationService : AccessibilityService(),
                         paused = !paused
                         view.text = if (paused) "▶" else "譯"
                         updateBubbleDescription()
-                        if (paused) overlay.clear() else scheduleScan()
+                        if (paused) {
+                            screenshotGeneration++
+                            screenBusy = false
+                            overlay.clear()
+                            overlay.hideForCapture(false)
+                            view.visibility = View.VISIBLE
+                        } else scheduleScan()
                     }
                     true
                 }
@@ -245,6 +397,16 @@ class AccessibilityTranslationService : AccessibilityService(),
 
     override fun onSharedPreferenceChanged(sharedPreferences: SharedPreferences?, key: String?) {
         if (key == "source") configureEngine()
+        if (key == "visual_screen_ocr_consent") {
+            visualOcrEnabled = Build.VERSION.SDK_INT >= 30 &&
+                prefs.getBoolean("visual_screen_ocr_consent", false)
+            screenshotGeneration++
+            screenBusy = false
+            overlay.hideForCapture(false)
+            bubble?.visibility = View.VISIBLE
+            overlay.clear()
+            scheduleScan()
+        }
     }
 
     override fun onInterrupt() {
@@ -252,7 +414,10 @@ class AccessibilityTranslationService : AccessibilityService(),
     }
 
     override fun onDestroy() {
+        screenshotGeneration++
         handler.removeCallbacksAndMessages(null)
+        visualOcr?.close()
+        visualOcr = null
         if (::prefs.isInitialized) prefs.unregisterOnSharedPreferenceChangeListener(this)
         engine?.close()
         engine = null

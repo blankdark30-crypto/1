@@ -35,7 +35,7 @@ class MainActivity : Activity() {
                 setPadding(0, dp(6), 0, dp(12))
             })
         }
-        label("螢幕原位翻譯 v0.3.1", 26f)
+        label("螢幕原位翻譯 v0.4", 26f)
         label("無需螢幕分享。第一次必須手動開啟 Android 無障礙服務，啟用後自動辨識其他 App 提供的介面文字並翻譯。圖片、遊戲畫面與影片字幕不保證可辨識。", 15f)
         label("來源語言（預設自動辨識；譯為繁體中文）", 16f)
         val spinner = Spinner(this).apply {
@@ -59,6 +59,17 @@ class MainActivity : Activity() {
                 prefs.edit().putBoolean("accessibility_disclosure_accepted", true)
                     .putString("source", codes[spinner.selectedItemPosition]).apply()
                 startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            }
+        })
+        label("遊戲畫面 OCR（Android 11 以上）", 17f)
+        label("開啟此功能後，已授權的無障礙服務會定期截取目前整個螢幕的畫面，在手機本機辨識並翻譯遊戲及圖片裡的字。截圖不會保存，也不會上傳至本程式伺服器。截圖可能包含聊天、通知或敏感資訊，請只在可信任的遊戲畫面啟用；部分受保護畫面無法截取。", 14f)
+        root.addView(Button(this).apply {
+            text = if (prefs.getBoolean("visual_screen_ocr_consent", false))
+                "關閉遊戲畫面 OCR" else "同意並開啟遊戲畫面 OCR"
+            setOnClickListener {
+                val next = !prefs.getBoolean("visual_screen_ocr_consent", false)
+                prefs.edit().putBoolean("visual_screen_ocr_consent", next).apply()
+                text = if (next) "關閉遊戲畫面 OCR" else "同意並開啟遊戲畫面 OCR"
             }
         })
         label("已經是中文的文字不會重複翻譯。純漢字日文可能因無法和中文區分而被略過。請先用英文網頁測試。", 14f)
