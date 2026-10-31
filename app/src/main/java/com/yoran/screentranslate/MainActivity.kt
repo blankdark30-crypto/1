@@ -42,7 +42,7 @@ class MainActivity : Activity() {
             setTextColor(0xFF111827.toInt())
         })
         root.addView(TextView(this).apply {
-            text = "跨 App 擷取文字 → 本機辨識 → 翻譯浮窗。每次重新開始擷取都需經 Android 授權。"
+            text = "跨 App 擷取文字 → 本機辨識 → 逐行原位翻譯。每次重新開始擷取都需經 Android 授權。"
             textSize = 15f
             setTextColor(0xFF4B5563.toInt())
             setPadding(0, dp(14), 0, dp(28))
@@ -65,7 +65,7 @@ class MainActivity : Activity() {
         sourceSpinner = spinner
         root.addView(spinner)
         root.addView(actionButton("① 開啟懸浮球") { showBubble() })
-        root.addView(actionButton("② 開始即時翻譯") { requestProjection() })
+        root.addView(actionButton("② 開始原位翻譯") { requestProjection() })
         root.addView(actionButton("暫停翻譯（保留懸浮球）") {
             controlService(ScreenTranslateService.ACTION_STOP_CAPTURE)
         })
@@ -73,7 +73,7 @@ class MainActivity : Activity() {
             controlService(ScreenTranslateService.ACTION_SHUTDOWN)
         })
         root.addView(TextView(this).apply {
-            text = "操作：點擊懸浮球切換掃描；拖曳移動；長按完全關閉。首次翻譯需要下載語言模型。\n\n隱私：不保存畫面、不錄音、不將截圖送至自設伺服器；金融、密碼等保護畫面可能無法擷取。"
+            text = "請在螢幕分享提示選擇「整個螢幕」以避免座標錯位。操作：點擊懸浮球切換掃描；拖曳移動；長按完全關閉。首次翻譯需要下載語言模型。\n\n隱私：不保存畫面、不錄音、不將截圖送至自設伺服器；金融、密碼等保護畫面可能無法擷取。"
             textSize = 13f
             setTextColor(0xFF6B7280.toInt())
             setPadding(0, dp(28), 0, 0)
