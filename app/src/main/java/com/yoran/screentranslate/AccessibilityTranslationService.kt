@@ -118,7 +118,11 @@ class AccessibilityTranslationService : AccessibilityService(),
         lastScan = SystemClock.elapsedRealtime()
         val root = rootInActiveWindow
         if (root == null) {
-            overlay.clear()
+            if (visualOcrEnabled && Build.VERSION.SDK_INT >= 30 && !blockedPackage(activeForegroundPackage)) {
+                captureVisualText(activeForegroundPackage)
+            } else {
+                overlay.clear()
+            }
             return
         }
         val pkg = root.packageName?.toString().orEmpty()
