@@ -70,7 +70,37 @@ class MainActivity : Activity() {
                 setPadding(0, dp(top), 0, dp(8))
             }
 
-        root.addView(header("三語 → 繁體中文翻譯", 25f))
+        root.addView(header("遊戲每秒翻譯 v0.6", 25f))
+        root.addView(header("已授權的無障礙服務可以每秒嘗試截取目前畫面，以本機 OCR 辨識並原位翻譯；請先手動在系統設定啟用無障礙權限。", 14f))
+        root.addView(header("畫面擷取與隱私授權", 17f, 14))
+        root.addView(header("開啟後，無障礙服務可以讀取目前顯示的整個螢幕畫面，包括遊戲、通知或對話。畫面只在手機記憶體中用於文字辨識，不儲存、不傳送至自設伺服器。禁止在密碼、金融、醫療資料等敏感畫面使用；部分 App 可能阻擋擷取。停止掃描可隨時關閉此功能。", 13f))
+        val autoStatus = header("自動翻譯尚未啟用", 14f)
+        val autoEnableButton = Button(this).apply {
+            text = "同意上述用途，開啟每秒自動翻譯"
+            isAllCaps = false
+            setOnClickListener {
+                prefs.edit().putBoolean("ocr_disclosure_accepted", true)
+                    .putBoolean("ocr_active", true)
+                    .putString("source", LanguageOptions.at(sourceSelector.selectedItemPosition))
+                    .apply()
+                autoStatus.text = "已要求啟用，請至 Android 無障礙設定開啟「三語遊戲翻譯」"
+                try { startActivity(Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+                catch (_: Exception) { autoStatus.text = "無法開啟無障礙設定" }
+            }
+        }
+        val autoStopButton = Button(this).apply {
+            text = "停止背景翻譯與關閉懸浮球"
+            isAllCaps = false
+            setOnClickListener {
+                prefs.edit().putBoolean("ocr_active", false).apply()
+                autoStatus.text = "自動翻譯已停止；無障礙權限可在系統設定中移除"
+            }
+        }
+        root.addView(autoEnableButton)
+        root.addView(autoStopButton)
+        root.addView(autoStatus)
+        root.addView(header("僅在 Android 11 以上支援畫面 OCR。每秒是目標間隔，OCR / 翻譯可能較慢，遇系統限速會自動退避。懸浮球點擊暫停／恢復、長按停止。", 13f))
+        root.addView(header("手動文字／截圖翻譯（備用）", 20f, 12))
         root.addView(header("僅使用你貼上的文字或手動選擇的圖片。無需無障礙、懸浮窗或螢幕分享權限。", 14f))
         root.addView(header("選擇原文語言", 16f, 16))
         sourceSelector = Spinner(this).apply {

@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <string name="ocr_service_description">使用者自行開啟後，每秒嘗試以無障礙畫面截取進行本機 OCR，將手動選擇的英文、韓文或日文翻譯成繁體中文，並在畫面原位覆蓋。可能讀取整個螢幕，請勿在敏感資料畫面使用，可隨時停止。</string>
+</resources>

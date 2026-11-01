@@ -1,15 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- Internet is used only when downloading ML Kit's translation models. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <application
-        android:label="三語翻譯器"
+        android:label="三語遊戲翻譯"
         android:icon="@android:drawable/ic_menu_search"
         android:theme="@style/AppTheme"
         android:usesCleartextTraffic="false"
         android:allowBackup="false">
-        <activity android:name=".MainActivity"
-            android:exported="true"
+        <activity android:name=".MainActivity" android:exported="true"
             android:launchMode="singleTop">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -26,5 +24,15 @@
                 <data android:mimeType="image/*" />
             </intent-filter>
         </activity>
+        <service android:name=".OneSecondTranslationService"
+            android:exported="true"
+            android:label="三語遊戲翻譯"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data android:name="android.accessibilityservice"
+                android:resource="@xml/game_translation_accessibility" />
+        </service>
     </application>
 </manifest>
