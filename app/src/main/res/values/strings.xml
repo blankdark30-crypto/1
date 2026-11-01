@@ -1,4 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <string name="accessibility_description">在取得使用者明確同意後，讀取其他 App 提供的可存取文字與位置，在原文附近繪製本機翻譯。跳過密碼和輸入欄，無需螢幕分享。</string>
-</resources>

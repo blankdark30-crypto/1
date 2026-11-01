@@ -1,80 +1,365 @@
 package com.yoran.screentranslate
 
 import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
-import android.provider.Settings
+import android.icu.text.Transliterator
+import android.text.InputType
+import android.view.Gravity
 import android.view.View
 import android.widget.ArrayAdapter
 import android.widget.Button
+import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
+import android.widget.AdapterView
+import com.google.mlkit.nl.translate.Translation
+import com.google.mlkit.nl.translate.TranslateLanguage
+import com.google.mlkit.nl.translate.Translator
+import com.google.mlkit.nl.translate.TranslatorOptions
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.TextRecognizer
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import com.google.mlkit.vision.text.korean.KoreanTextRecognizerOptions
+import com.google.mlkit.vision.text.japanese.JapaneseTextRecognizerOptions
 
+/**
+ * Manual offline-first translator. There are no foreground services, overlays,
+ * accessibility permissions, screen capture APIs, or automatic screen reading.
+ */
 class MainActivity : Activity() {
-    private val codes = listOf("auto", "en", "ja", "ko")
+    private lateinit var sourceSelector: Spinner
+    private lateinit var sourceInput: EditText
+    private lateinit var resultLabel: TextView
+    private lateinit var statusLabel: TextView
+    private lateinit var translateButton: Button
+    private lateinit var imageButton: Button
+    private lateinit var pasteButton: Button
+    private var translator: Translator? = null
+    private var recognizer: TextRecognizer? = null
+    private var busy = false
+    private var destroyed = false
+    private var generation = 0
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val prefs = getSharedPreferences("config", MODE_PRIVATE)
-        if (!prefs.getBoolean("source_auto_migrated_031", false)) {
-            // v0.3 silently defaulted to English. Reset once so updates start in auto mode.
-            prefs.edit().putString("source", "auto")
-                .putBoolean("source_auto_migrated_031", true).apply()
-        }
+        val prefs = getSharedPreferences("manual_translate_v05", MODE_PRIVATE)
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(24), dp(42), dp(24), dp(24))
-            setBackgroundColor(0xFFF7F7FB.toInt())
+            setPadding(dp(18), dp(28), dp(18), dp(24))
+            setBackgroundColor(0xFFF7F8FC.toInt())
         }
-        fun label(t: String, size: Float) {
-            root.addView(TextView(this).apply {
-                text = t
+        val scroll = ScrollView(this).apply {
+            isFillViewport = true
+            addView(root)
+        }
+        fun header(value: String, size: Float, top: Int = 8): TextView =
+            TextView(this).apply {
+                text = value
                 textSize = size
-                setTextColor(0xFF172033.toInt())
-                setPadding(0, dp(6), 0, dp(12))
-            })
+                setTextColor(0xFF182136.toInt())
+                setPadding(0, dp(top), 0, dp(8))
+            }
+
+        root.addView(header("三語 → 繁體中文翻譯", 25f))
+        root.addView(header("僅使用你貼上的文字或手動選擇的圖片。無需無障礙、懸浮窗或螢幕分享權限。", 14f))
+        root.addView(header("選擇原文語言", 16f, 16))
+        sourceSelector = Spinner(this).apply {
+            adapter = ArrayAdapter(
+                this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item,
+                LanguageOptions.labels
+            )
+            setSelection(LanguageOptions.codes.indexOf(
+                prefs.getString("source", "en")).coerceAtLeast(0))
+            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(
+                    parent: AdapterView<*>?, view: View?, position: Int, id: Long
+                ) {
+                    prefs.edit().putString("source", LanguageOptions.at(position)).apply()
+                }
+                override fun onNothingSelected(parent: AdapterView<*>?) {}
+            }
         }
-        label("螢幕原位翻譯 v0.4", 26f)
-        label("無需螢幕分享。第一次必須手動開啟 Android 無障礙服務，啟用後自動辨識其他 App 提供的介面文字並翻譯。圖片、遊戲畫面與影片字幕不保證可辨識。", 15f)
-        label("來源語言（預設自動辨識；譯為繁體中文）", 16f)
-        val spinner = Spinner(this).apply {
-            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item,
-                listOf("自動偵測英／日／韓", "英文 English", "日文 日本語", "韓文 한국어"))
-            setSelection(codes.indexOf(prefs.getString("source", "auto")).coerceAtLeast(0))
+        root.addView(sourceSelector)
+        root.addView(header("原文", 16f, 16))
+        sourceInput = EditText(this).apply {
+            hint = "貼上英文、韓文或日文；也可以選擇遊戲截圖"
+            textSize = 16f
+            setTextColor(0xFF172033.toInt())
+            setHintTextColor(0xFF707B91.toInt())
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or
+                InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+            minLines = 5
+            maxLines = 12
+            gravity = Gravity.TOP or Gravity.START
+            setPadding(dp(12), dp(12), dp(12), dp(12))
+            setBackgroundColor(0xFFFFFFFF.toInt())
         }
-        root.addView(spinner)
+        root.addView(sourceInput, LinearLayout.LayoutParams(-1, -2))
+        pasteButton = Button(this).apply {
+            text = "貼上剪貼簿並翻譯"
+            isAllCaps = false
+            setOnClickListener { pasteThenTranslate() }
+        }
+        root.addView(pasteButton)
+        imageButton = Button(this).apply {
+            text = "選擇遊戲截圖辨識並翻譯"
+            isAllCaps = false
+            setOnClickListener { openImagePicker() }
+        }
+        root.addView(imageButton)
+        translateButton = Button(this).apply {
+            text = "翻譯為繁體中文"
+            isAllCaps = false
+            setOnClickListener { translateCurrentInput() }
+        }
+        root.addView(translateButton)
+        root.addView(header("翻譯結果", 16f, 16))
+        resultLabel = TextView(this).apply {
+            text = "翻譯結果將顯示在這裡"
+            textSize = 18f
+            setTextColor(0xFF1B2640.toInt())
+            setPadding(dp(12), dp(16), dp(12), dp(16))
+            setTextIsSelectable(true)
+            setBackgroundColor(0xFFE9EDF5.toInt())
+            minHeight = dp(110)
+        }
+        root.addView(resultLabel, LinearLayout.LayoutParams(-1, -2))
         root.addView(Button(this).apply {
-            text = "儲存語言"
+            text = "複製翻譯結果"
+            isAllCaps = false
             setOnClickListener {
-                prefs.edit().putString("source", codes[spinner.selectedItemPosition]).apply()
-                Toast.makeText(this@MainActivity, "已更新語言", Toast.LENGTH_SHORT).show()
+                val out = resultLabel.text.toString()
+                if (out.isNotBlank() && out != "翻譯結果將顯示在這裡") {
+                    val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+                    clipboard.setPrimaryClip(ClipData.newPlainText("繁體中文翻譯", out))
+                    Toast.makeText(this@MainActivity, "已複製", Toast.LENGTH_SHORT).show()
+                }
             }
         })
-        label("權限與隱私說明", 17f)
-        label("本功能將使用無障礙服務讀取其他 App 可存取的畫面文字、介面結構與位置，以便就地翻譯。會排除可辨識的密碼欄及可編輯輸入欄。文字在本機辨識與翻譯，首次需下載語言模型；不儲存截圖、不將文字送到本程式伺服器。請勿在顯示病患、銀行或其他敏感資料時使用。", 14f)
-        root.addView(Button(this).apply {
-            text = "我了解上述存取用途，前往無障礙設定啟用"
-            setOnClickListener {
-                prefs.edit().putBoolean("accessibility_disclosure_accepted", true)
-                    .putString("source", codes[spinner.selectedItemPosition]).apply()
-                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-            }
-        })
-        label("遊戲畫面 OCR（Android 11 以上）", 17f)
-        label("開啟此功能後，已授權的無障礙服務會定期截取目前整個螢幕的畫面，在手機本機辨識並翻譯遊戲及圖片裡的字。截圖不會保存，也不會上傳至本程式伺服器。截圖可能包含聊天、通知或敏感資訊，請只在可信任的遊戲畫面啟用；部分受保護畫面無法截取。", 14f)
-        root.addView(Button(this).apply {
-            text = if (prefs.getBoolean("visual_screen_ocr_consent", false))
-                "關閉遊戲畫面 OCR" else "同意並開啟遊戲畫面 OCR"
-            setOnClickListener {
-                val next = !prefs.getBoolean("visual_screen_ocr_consent", false)
-                prefs.edit().putBoolean("visual_screen_ocr_consent", next).apply()
-                text = if (next) "關閉遊戲畫面 OCR" else "同意並開啟遊戲畫面 OCR"
-            }
-        })
-        label("已經是中文的文字不會重複翻譯。純漢字日文可能因無法和中文區分而被略過。請先用英文網頁測試。", 14f)
-        label("啟用後：開啟其他 App 即自動翻譯；點懸浮球暫停／恢復；長按懸浮球關閉服務。若服務沒有出現，請回到無障礙設定確認已啟用。", 14f)
-        setContentView(root)
+        statusLabel = header("就緒", 13f, 14)
+        root.addView(statusLabel)
+        root.addView(header(
+            "隱私：不讀取其他 App 畫面、不收集背景文字、不儲存截圖。首次下載翻譯模型需要網路；下載後可使用本機翻譯。遊戲中的文字必須先手動截圖後選取。",
+            12f, 12
+        ))
+        setContentView(scroll)
+        intent?.let(::handleSharedContent)
     }
-    private fun dp(x: Int) = (x * resources.displayMetrics.density).toInt()
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleSharedContent(intent)
+    }
+
+    private fun handleSharedContent(intent: Intent) {
+        if (intent.action != Intent.ACTION_SEND) return
+        val mime = intent.type ?: return
+        if (mime.startsWith("text/")) {
+            val value = intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()
+            if (!value.isNullOrBlank()) {
+                sourceInput.setText(value.take(MAX_CHARS))
+                sourceInput.setSelection(sourceInput.text.length)
+                sourceInput.post { translateCurrentInput() }
+            }
+        } else if (mime.startsWith("image/")) {
+            val uri: Uri? = if (Build.VERSION.SDK_INT >= 33)
+                intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+            else {
+                @Suppress("DEPRECATION")
+                intent.getParcelableExtra(Intent.EXTRA_STREAM)
+            }
+            if (uri != null) sourceInput.post { recognizeSelectedImage(uri) }
+        }
+    }
+
+    private fun pasteThenTranslate() {
+        if (busy) return
+        val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+        val value = try {
+            clipboard.primaryClip?.getItemAt(0)?.coerceToText(this)?.toString()
+        } catch (_: Exception) { null }
+        if (value.isNullOrBlank()) {
+            statusLabel.text = "剪貼簿沒有可用文字"
+            return
+        }
+        sourceInput.setText(value.take(MAX_CHARS))
+        sourceInput.setSelection(sourceInput.text.length)
+        translateCurrentInput()
+    }
+
+    private fun openImagePicker() {
+        if (busy) return
+        val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
+            type = "image/*"
+            addCategory(Intent.CATEGORY_OPENABLE)
+        }
+        try {
+            startActivityForResult(Intent.createChooser(intent, "選擇截圖"), REQUEST_IMAGE)
+        } catch (_: Exception) {
+            statusLabel.text = "無法開啟圖片選取器"
+        }
+    }
+
+    @Deprecated("Used for lightweight Android 8+ image selection without third-party dependencies")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQUEST_IMAGE && resultCode == RESULT_OK) {
+            data?.data?.let(::recognizeSelectedImage)
+        }
+    }
+
+    private fun recognizeSelectedImage(uri: Uri) {
+        if (busy || destroyed) return
+        setBusy(true)
+        statusLabel.text = "正在辨識圖片文字…"
+        val token = ++generation
+        val client = try {
+            when (LanguageOptions.at(sourceSelector.selectedItemPosition)) {
+                "ko" -> TextRecognition.getClient(KoreanTextRecognizerOptions.Builder().build())
+                "ja" -> TextRecognition.getClient(JapaneseTextRecognizerOptions.Builder().build())
+                else -> TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+            }
+        } catch (e: Exception) {
+            fail(token, "OCR 初始化失敗：" + (e.message ?: "未知原因"))
+            return
+        }
+        recognizer = client
+        try {
+            val image = InputImage.fromFilePath(this, uri)
+            client.process(image)
+                .addOnSuccessListener { parsed ->
+                    client.close()
+                    if (recognizer === client) recognizer = null
+                    if (!isValid(token)) return@addOnSuccessListener
+                    val extracted = parsed.text.trim().take(MAX_CHARS)
+                    if (extracted.isBlank()) {
+                        fail(token, "沒有辨識到文字，可能是特殊字體或圖片過暗")
+                        return@addOnSuccessListener
+                    }
+                    sourceInput.setText(extracted)
+                    statusLabel.text = "已辨識圖片文字，正在翻譯…"
+                    translateText(extracted, token)
+                }
+                .addOnFailureListener { e ->
+                    client.close()
+                    if (recognizer === client) recognizer = null
+                    fail(token, "OCR 失敗：" + (e.message ?: "未知原因"))
+                }
+        } catch (e: Exception) {
+            client.close()
+            if (recognizer === client) recognizer = null
+            fail(token, "無法讀取圖片：" + (e.message ?: "未知原因"))
+        }
+    }
+
+    private fun translateCurrentInput() {
+        if (busy || destroyed) return
+        val input = sourceInput.text.toString().trim()
+        if (input.isBlank()) {
+            statusLabel.text = "請先輸入文字或選擇截圖"
+            return
+        }
+        if (input.length > MAX_CHARS) {
+            statusLabel.text = "文字太長，請縮短至 $MAX_CHARS 字以內"
+            return
+        }
+        setBusy(true)
+        translateText(input, ++generation)
+    }
+
+    private fun translateText(text: String, token: Int) {
+        if (!isValid(token)) return
+        val options = TranslatorOptions.Builder()
+            .setSourceLanguage(
+                when (LanguageOptions.at(sourceSelector.selectedItemPosition)) {
+                    "ko" -> TranslateLanguage.KOREAN
+                    "ja" -> TranslateLanguage.JAPANESE
+                    else -> TranslateLanguage.ENGLISH
+                }
+            )
+            .setTargetLanguage(TranslateLanguage.CHINESE)
+            .build()
+        translator?.close()
+        val client = try { Translation.getClient(options) }
+        catch (e: Exception) {
+            fail(token, "無法建立翻譯模型：" + (e.message ?: "未知原因"))
+            return
+        }
+        translator = client
+        statusLabel.text = "正在準備翻譯模型（首次可能需要下載）…"
+        client.downloadModelIfNeeded()
+            .addOnSuccessListener {
+                if (!isValid(token)) return@addOnSuccessListener
+                statusLabel.text = "翻譯中…"
+                client.translate(text)
+                    .addOnSuccessListener { value ->
+                        if (isValid(token)) {
+                            val traditional = try {
+                                Transliterator.getInstance("Simplified-Traditional")
+                                    .transliterate(value)
+                            } catch (_: Exception) { value }
+                            resultLabel.text = traditional
+                            statusLabel.text = "翻譯完成"
+                            setBusy(false)
+                        }
+                        if (translator === client) translator = null
+                        client.close()
+                    }
+                    .addOnFailureListener { error ->
+                        if (translator === client) translator = null
+                        client.close()
+                        fail(token, "翻譯失敗：" + (error.message ?: "未知原因"))
+                    }
+            }
+            .addOnFailureListener { error ->
+                if (translator === client) translator = null
+                client.close()
+                fail(token, "模型下載失敗，請確認網路：" + (error.message ?: "未知原因"))
+            }
+    }
+
+    private fun setBusy(value: Boolean) {
+        busy = value
+        translateButton.isEnabled = !value
+        pasteButton.isEnabled = !value
+        imageButton.isEnabled = !value
+        sourceSelector.isEnabled = !value
+    }
+
+    private fun isValid(token: Int): Boolean = !destroyed && token == generation
+
+    private fun fail(token: Int, message: String) {
+        if (!isValid(token)) return
+        statusLabel.text = message
+        setBusy(false)
+    }
+
+    override fun onDestroy() {
+        destroyed = true
+        generation++
+        recognizer?.close()
+        recognizer = null
+        translator?.close()
+        translator = null
+        super.onDestroy()
+    }
+
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+
+    companion object {
+        private const val REQUEST_IMAGE = 508
+        private const val MAX_CHARS = 3000
+    }
 }

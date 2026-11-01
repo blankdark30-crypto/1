@@ -8,11 +8,12 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.yoran.screentranslate"
+        // Separate from the old crashing prototype and its incompatible CI debug signature.
+        applicationId = "com.yoran.manualtranslator"
         minSdk = 26
         targetSdk = 36
         versionCode = 5
-        versionName = "0.4.0"
+        versionName = "0.5.0"
     }
 
     compileOptions {

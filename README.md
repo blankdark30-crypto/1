@@ -1,10 +1,30 @@
-# ScreenTranslate v0.4 — Game OCR via Accessibility Screenshots
-- Android 11+ uses AccessibilityService.takeScreenshot with canTakeScreenshot=true. No MediaProjection permission or repeated screen-sharing prompt.
-- User must explicitly enable Accessibility Service, then separately opt in to game OCR in the app; OFF by default.
-- ML Kit recognizes English, Japanese and Korean pixels on device; localized regions are translated to Traditional Chinese. Han-only Chinese text is ignored conservatively.
-- Screenshot bitmaps stay in memory, are recycled after OCR, and are not saved or sent to an application server.
-- Window overlay is hidden during sampling to avoid OCR feedback. Sample loop is throttled to around one per 2.2 seconds plus processing time.
-- When capture fails, fall back to Accessibility UI text-node reading. Android 8–10 supports node-only mode.
-- Some secure games or screens cannot be captured. Android screenshot APIs are rate-limited. OCR may fail on tiny, highly stylized or animated fonts.
-- Visual OCR can encounter sensitive text. Do not enable it while viewing private medical, banking or credential screens.
-- Build/tests pass on CI is NOT proof of functionality on the user's phone. Run physical device tests, including overlay coordinates, rotation, refresh, games and apps.
+# 三語翻譯器 v0.5.0 — No accessibility, overlays, or screen capture
+
+Simplified native Android application. The source languages are **English, Korean, and Japanese**, chosen manually; the target is Chinese with on-device simplified-to-traditional conversion.
+
+## Features
+- Type or paste text to translate.
+- Explicit **Paste and Translate** button reads the clipboard only when tapped.
+- Select a saved screenshot/photo via Android document/image picker to recognize it using on-device ML Kit OCR; recognized text is inserted into the editor and translated automatically.
+- Share selected text or images from another app using the Android share sheet.
+- Copy translated Chinese.
+- Offline translation after ML Kit language models have been downloaded. First usage requires internet and storage for model download.
+- State/status feedback when models, OCR or translation fail.
+- One foreground activity; no service, no periodic task, no auto-restarts, no accessibility/overlay/screen-sharing permission.
+
+## Important tradeoff
+This application **cannot** automatically read or overlay a running game's screen. To translate game text, capture a screenshot manually and select it in the app, or share the screenshot into the app. Automatic cross-app capture would require a different Android privileged or user-consented screen capture mechanism.
+
+## Privacy
+Only manually entered, pasted, selected or explicitly shared content is processed.
+OCR and translation run through the device ML Kit SDK; model download needs network. No screenshots are stored by the app. No user content is sent to an application-owned server. Screenshots you create manually remain in your phone's photo storage until you delete them.
+
+## Installing
+- Supports Android 8.0+.
+- **Uninstall the older v0.4 "螢幕翻譯球" and disable its accessibility service** to stop its crash/restart loop. The new app has a different application ID (\`com.yoran.manualtranslator\`) and is independently installed.
+- Pick the source language before translating.
+- Text: enter or tap Paste and Translate.
+- Game: take screenshot using the phone's normal screenshot function, open this app, choose image, and translate.
+
+## Verification
+GitHub Actions runs \`:app:testDebugUnitTest\` and \`:app:assembleDebug\`; compiling does not establish real-device crash-free operation.
