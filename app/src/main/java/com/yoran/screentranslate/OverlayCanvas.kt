@@ -70,7 +70,10 @@ internal class OverlayCanvas(context: Context, private val wm: WindowManager) {
         private var labels: List<VisibleTranslation> = emptyList()
         private fun dp(n: Float) = n * density
         fun render(items: List<VisibleTranslation>) {
-            labels = items.take(12)
+            val next = items.take(12)
+            // Identical OCR frames should not force another overlay redraw.
+            if (next == labels) return
+            labels = next
             invalidate()
         }
         override fun onDraw(canvas: Canvas) {
@@ -80,8 +83,7 @@ internal class OverlayCanvas(context: Context, private val wm: WindowManager) {
             for (label in labels) {
                 val text = label.translated.trim()
                 if (text.isBlank()) continue
-                val size = (label.bottom - label.top).toFloat().times(.85f)
-                    .coerceIn(13f * scaled, 22f * scaled)
+                val size = TranslationFontSizing.sizePx(label.bottom - label.top, scaled)
                 fg.textSize = size
                 val padding = dp(5f)
                 val x = label.left.toFloat().coerceIn(0f, max(0f, width - dp(55f)))

@@ -29,6 +29,7 @@ internal class FrameTranslator(
     private var frameH = 1
     private var overlayW = 1
     private var overlayH = 1
+    private var consecutiveEmptyOcrFrames = 0
 
     fun updateLanguage(selected: String) {
         if (language == selected) return
@@ -40,6 +41,7 @@ internal class FrameTranslator(
         ready = false
         busy = false
         latest = emptyList()
+        consecutiveEmptyOcrFrames = 0
         onOutput(emptyList())
         val options = TranslatorOptions.Builder()
             .setSourceLanguage(when(selected) {
@@ -72,6 +74,14 @@ internal class FrameTranslator(
         frameH = frame.height
         overlayW = width
         overlayH = height
+        // A one-off OCR miss shouldn't erase all translation labels for a frame.
+        // Clear on a second consecutive empty result to avoid indefinitely stale UI.
+        if (frame.lines.isEmpty() && latest.isNotEmpty()) {
+            consecutiveEmptyOcrFrames++
+            if (consecutiveEmptyOcrFrames < 2) return
+        } else {
+            consecutiveEmptyOcrFrames = 0
+        }
         latest = frame.lines
         publish()
         translateNext()

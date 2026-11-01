@@ -273,8 +273,9 @@ class OneSecondTranslationService : AccessibilityService(),
         inFlight = true
         val token = ++generation
         startedAt = SystemClock.elapsedRealtime()
+        // Only the translated text needs exclusion from OCR. Keep the control
+        // bubble visible to avoid a second conspicuous 1 Hz blink.
         layer?.hide()
-        bubble?.visibility = View.INVISIBLE
 
         // If Android never delivers an OCR callback, return to a safe state.
         val timeout = Runnable {
@@ -342,7 +343,9 @@ class OneSecondTranslationService : AccessibilityService(),
                 setStatus("遊戲畫面無法擷取")
                 finishCapture(false, token)
             }
-        }, 90L)
+        // Shorten the compositor settling interval; the layer remains hidden
+        // until the screenshot callback, rather than through the OCR work.
+        }, 32L)
     }
 
     private fun hasFocusedSensitiveInput(): Boolean {

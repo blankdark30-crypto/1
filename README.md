@@ -1,4 +1,4 @@
-# 三語遊戲 OCR v0.6 — Accessibility screenshot, target ~1 FPS
+# 三語遊戲 OCR v0.6.1 — Reduced font size, lower flicker
 
 ## User-specified function
 - User chooses source: English / Korean / Japanese. Output always Chinese converted to Traditional using on-device Transliterator.
@@ -8,6 +8,13 @@
 - Single non-touchable TYPE_ACCESSIBILITY_OVERLAY draws translations near detected positions; draggable control bubble pauses/resumes, long press turns off translation.
 - No hidden autostarts: first-time in-app disclosure, user opt-in, Android system accessibility enable. An accessibility service is managed by Android, not a continuously restarted background foreground service.
 - Existing v0.5 manual text/paste/screenshot selection remains available.
+
+## v0.6.1 visual polish
+- Translation text uses exactly **2sp less** than v0.6 (old 13–22sp -> new 11–20sp where the screen scaling is 1x).
+- The floating control ball remains visible during screen capture, reducing visible blinking.
+- Reduced pre-capture overlay-hidden settle time from 90 ms to 32 ms. The overlay is still excluded while screenshot is in flight to avoid OCR feedback; **a short flicker may remain** depending on OEM screenshot latency.
+- Skip redundant canvas redraws for identical translations and tolerate a single empty OCR frame before clearing stale labels.
+- These are visual mitigations, not a promise of flicker-free rendering. Physical-device validation is required.
 
 ## Crash mitigation
 - Only one screenshot/OCR request at a time. Main thread callbacks, 12-second watchdog, and lifecycle generation invalidation.
