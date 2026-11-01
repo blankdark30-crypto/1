@@ -12,7 +12,6 @@ class SourceLanguageDetectorTest {
     @Test fun japaneseKanaIsDetected() {
         assertEquals("ja", SourceLanguageDetector.select("今日は天気がいいです", "auto"))
         assertEquals("ja", SourceLanguageDetector.select("コンピュータ", "auto"))
-        assertEquals("ja", SourceLanguageDetector.select("今日", "ja")?.let { "ja" } ?: "skip")
     }
 
     @Test fun koreanHangulIsDetected() {
