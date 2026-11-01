@@ -279,8 +279,8 @@ class OneSecondTranslationService : AccessibilityService(),
         // If Android never delivers an OCR callback, return to a safe state.
         val timeout = Runnable {
             if (token == generation && inFlight) {
+                finishCapture(false, token)
                 generation++
-                finishCapture(false)
                 setStatus("辨識逾時，延後重試")
             }
         }
@@ -288,7 +288,7 @@ class OneSecondTranslationService : AccessibilityService(),
         main.postDelayed(timeout, 12000L)
         main.postDelayed({
             if (!isActive(token, packageAtCapture)) {
-                finishCapture(false)
+                finishCapture(false, token)
                 return@postDelayed
             }
             try {
@@ -310,7 +310,7 @@ class OneSecondTranslationService : AccessibilityService(),
                             bubble?.visibility = View.VISIBLE
                             if (image == null) {
                                 setStatus("畫面無法讀取")
-                                finishCapture(false)
+                                finishCapture(false, token)
                                 return
                             }
                             val language = prefs.getString("source", "en") ?: "en"
@@ -323,11 +323,11 @@ class OneSecondTranslationService : AccessibilityService(),
                                             setStatus("每秒掃描 · " + frame.lines.size + " 行文字")
                                         }
                                     }
-                                    finishCapture(true)
-                                } ?: run { image.recycle(); finishCapture(false) }
+                                    finishCapture(true, token)
+                                } ?: run { image.recycle(); finishCapture(false, token) }
                             } catch (_: Exception) {
                                 image.recycle()
-                                finishCapture(false)
+                                finishCapture(false, token)
                             }
                         }
 
@@ -335,12 +335,12 @@ class OneSecondTranslationService : AccessibilityService(),
                             if (!isActive(token, packageAtCapture)) return
                             setStatus(if (errorCode == ERROR_TAKE_SCREENSHOT_INTERVAL_TIME_SHORT)
                                 "系統限制截圖頻率，已延後" else "畫面擷取受限（$errorCode）")
-                            finishCapture(false)
+                            finishCapture(false, token)
                         }
                     })
             } catch (_: Exception) {
                 setStatus("遊戲畫面無法擷取")
-                finishCapture(false)
+                finishCapture(false, token)
             }
         }, 90L)
     }
@@ -369,7 +369,8 @@ class OneSecondTranslationService : AccessibilityService(),
         token == generation && connected && !stopped && enabled && !paused &&
             packageAtCapture.isNotBlank() && packageAtCapture == activePackage
 
-    private fun finishCapture(success: Boolean) {
+    private fun finishCapture(success: Boolean, token: Int) {
+        if (token != generation) return
         watchdog?.let(main::removeCallbacks)
         watchdog = null
         layer?.show()
