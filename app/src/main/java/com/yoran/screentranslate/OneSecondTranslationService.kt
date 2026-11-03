@@ -19,8 +19,11 @@ import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityWindowInfo
 import android.widget.TextView
 import kotlin.math.abs
+
+private data class WindowScreenshotTarget(val id: Int, val bounds: CaptureBounds)
 
 /**
  * User-consented Accessibility screenshot -> OCR -> translation overlay.
@@ -84,10 +87,19 @@ class OneSecondTranslationService : AccessibilityService(),
             event.eventType != AccessibilityEvent.TYPE_WINDOWS_CHANGED &&
             event.eventType != AccessibilityEvent.TYPE_VIEW_SCROLLED) return
         val pkg = event.packageName?.toString() ?: return
-        if (pkg == packageName || forbidden(pkg)) {
-            activePackage = ""
-            layer?.clear()
+        // Ignore our own overlay accessibility events; they are not changes of the game.
+        if (pkg == packageName) return
+        if (forbidden(pkg)) {
+            if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+                activePackage = ""
+                translator?.clear()
+                layer?.clear()
+            }
             return
+        }
+        if (activePackage.isNotBlank() && activePackage != pkg) {
+            translator?.clear()
+            layer?.clear()
         }
         activePackage = pkg
         if (!inFlight && !tickScheduled) scheduleTick(150L)
@@ -257,6 +269,10 @@ class OneSecondTranslationService : AccessibilityService(),
                 scheduleTick(ScanIntervalPolicy.TARGET_INTERVAL_MS)
                 return
             }
+            if (activePackage.isNotBlank() && activePackage != foreground) {
+                translator?.clear()
+                layer?.clear()
+            }
             activePackage = foreground
         }
         val packageAtCapture = activePackage
@@ -273,9 +289,12 @@ class OneSecondTranslationService : AccessibilityService(),
         inFlight = true
         val token = ++generation
         startedAt = SystemClock.elapsedRealtime()
-        // Only the translated text needs exclusion from OCR. Keep the control
-        // bubble visible to avoid a second conspicuous 1 Hz blink.
-        layer?.hide()
+        // Android 14+ can capture the target window underneath our accessibility
+        // overlay. This keeps the translated subtitles visible continuously.
+        val targetWindow = chooseWindowScreenshotTarget()
+        // Android 11–13 cannot capture a window excluding its overlay, so their
+        // legacy full-display capture still requires briefly hiding subtitles.
+        if (targetWindow == null) layer?.hide()
 
         // If Android never delivers an OCR callback, return to a safe state.
         val timeout = Runnable {
@@ -293,8 +312,7 @@ class OneSecondTranslationService : AccessibilityService(),
                 return@postDelayed
             }
             try {
-                takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor,
-                    object : TakeScreenshotCallback {
+                val callback = object : TakeScreenshotCallback {
                         override fun onSuccess(result: ScreenshotResult) {
                             if (!isActive(token, packageAtCapture)) {
                                 result.hardwareBuffer.close()
@@ -308,7 +326,6 @@ class OneSecondTranslationService : AccessibilityService(),
                                 } finally { buffer.close() }
                             } catch (_: Exception) { null }
                             layer?.show()
-                            bubble?.visibility = View.VISIBLE
                             if (image == null) {
                                 setStatus("畫面無法讀取")
                                 finishCapture(false, token)
@@ -320,7 +337,8 @@ class OneSecondTranslationService : AccessibilityService(),
                                     if (isActive(token, packageAtCapture)) {
                                         val o = layer
                                         if (o != null) {
-                                            translator?.onFrame(frame, o.width, o.height)
+                                            translator?.onFrame(
+                                                frame, o.width, o.height, targetWindow?.bounds)
                                             setStatus("每秒掃描 · " + frame.lines.size + " 行文字")
                                         }
                                     }
@@ -338,14 +356,42 @@ class OneSecondTranslationService : AccessibilityService(),
                                 "系統限制截圖頻率，已延後" else "畫面擷取受限（$errorCode）")
                             finishCapture(false, token)
                         }
-                    })
+                    }
+                if (Build.VERSION.SDK_INT >= 34 && targetWindow != null) {
+                    takeScreenshotOfWindow(targetWindow.id, mainExecutor, callback)
+                } else {
+                    takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, callback)
+                }
             } catch (_: Exception) {
                 setStatus("遊戲畫面無法擷取")
                 finishCapture(false, token)
             }
-        // Shorten the compositor settling interval; the layer remains hidden
-        // until the screenshot callback, rather than through the OCR work.
-        }, 32L)
+        }, if (targetWindow != null) 0L else 32L)
+    }
+
+    /**
+     * API 34+: capture the application window without capturing accessibility overlays.
+     * Window bounds are needed because OCR coordinates are local to that window.
+     * If the active app window cannot be identified, fall back to the legacy display
+     * screenshot path, which still must hide the subtitles.
+     */
+    private fun chooseWindowScreenshotTarget(): WindowScreenshotTarget? {
+        if (Build.VERSION.SDK_INT < 34) return null
+        return try {
+            val rootId = rootInActiveWindow?.windowId
+            val list = windows
+            val window = list.firstOrNull {
+                it.type == AccessibilityWindowInfo.TYPE_APPLICATION && it.id == rootId
+            } ?: list.firstOrNull {
+                it.type == AccessibilityWindowInfo.TYPE_APPLICATION && it.isActive
+            } ?: return null
+            val rect = Rect()
+            window.getBoundsInScreen(rect)
+            if (window.id < 0 || rect.width() <= 0 || rect.height() <= 0) return null
+            WindowScreenshotTarget(
+                window.id, CaptureBounds(rect.left, rect.top, rect.width(), rect.height())
+            )
+        } catch (_: Exception) { null }
     }
 
     private fun hasFocusedSensitiveInput(): Boolean {

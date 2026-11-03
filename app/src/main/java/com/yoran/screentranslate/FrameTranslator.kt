@@ -11,6 +11,9 @@ import kotlin.math.roundToInt
  * Translate and cache OCR lines on-device. Translation and OCR are independent: frames
  * may arrive while text translation is in flight, but translated updates use the latest boxes.
  */
+/** Physical screen-space bounds of a captured application window (API 34+). */
+internal data class CaptureBounds(val left: Int, val top: Int, val width: Int, val height: Int)
+
 internal class FrameTranslator(
     private val onOutput: (List<VisibleTranslation>) -> Unit,
     private val onStatus: (String) -> Unit
@@ -29,6 +32,8 @@ internal class FrameTranslator(
     private var frameH = 1
     private var overlayW = 1
     private var overlayH = 1
+    private var captureBounds: CaptureBounds? = null
+    private var lastPublished: List<VisibleTranslation> = emptyList()
     private var consecutiveEmptyOcrFrames = 0
 
     fun updateLanguage(selected: String) {
@@ -41,6 +46,8 @@ internal class FrameTranslator(
         ready = false
         busy = false
         latest = emptyList()
+        lastPublished = emptyList()
+        captureBounds = null
         consecutiveEmptyOcrFrames = 0
         onOutput(emptyList())
         val options = TranslatorOptions.Builder()
@@ -68,17 +75,18 @@ internal class FrameTranslator(
             }
     }
 
-    fun onFrame(frame: OcrFrame, width: Int, height: Int) {
+    fun onFrame(frame: OcrFrame, width: Int, height: Int, bounds: CaptureBounds? = null) {
         if (closed) return
         frameW = frame.width
         frameH = frame.height
         overlayW = width
         overlayH = height
-        // A one-off OCR miss shouldn't erase all translation labels for a frame.
+        captureBounds = bounds
+        // Keep the previous subtitle through occasional empty OCR results.
         // Clear on a second consecutive empty result to avoid indefinitely stale UI.
         if (frame.lines.isEmpty() && latest.isNotEmpty()) {
             consecutiveEmptyOcrFrames++
-            if (consecutiveEmptyOcrFrames < 2) return
+            if (consecutiveEmptyOcrFrames < 3) return
         } else {
             consecutiveEmptyOcrFrames = 0
         }
@@ -89,25 +97,37 @@ internal class FrameTranslator(
 
     private fun publish() {
         if (closed) return
-        val scaleX = overlayW.toDouble() / frameW
-        val scaleY = overlayH.toDouble() / frameH
-        // Reject rotated/window-clipped aspect ratios instead of guessing coordinates.
-        if (frameW <= 0 || frameH <= 0 || overlayW <= 0 || overlayH <= 0 ||
-            kotlin.math.abs(scaleX-scaleY) / kotlin.math.max(scaleX,scaleY) > 0.12) {
-            onOutput(emptyList())
+        if (frameW <= 0 || frameH <= 0 || overlayW <= 0 || overlayH <= 0) {
             return
         }
-        onOutput(latest.mapNotNull { line ->
+        val target = captureBounds
+        val targetWidth = target?.width ?: overlayW
+        val targetHeight = target?.height ?: overlayH
+        if (targetWidth <= 0 || targetHeight <= 0) return
+        val scaleX = targetWidth.toDouble() / frameW
+        val scaleY = targetHeight.toDouble() / frameH
+        // Do not invent coordinates when the screenshot and target geometry disagree.
+        if (kotlin.math.abs(scaleX - scaleY) / kotlin.math.max(scaleX, scaleY) > 0.12) {
+            return
+        }
+        val offsetX = target?.left ?: 0
+        val offsetY = target?.top ?: 0
+        val visible = latest.mapNotNull { line ->
             cache[line.original]?.takeIf { it.isNotBlank() }?.let { translated ->
                 VisibleTranslation(
-                    line.original,translated,
-                    (line.left * scaleX).roundToInt(),
-                    (line.top * scaleY).roundToInt(),
-                    (line.right * scaleX).roundToInt(),
-                    (line.bottom * scaleY).roundToInt()
+                    line.original, translated,
+                    offsetX + (line.left * scaleX).roundToInt(),
+                    offsetY + (line.top * scaleY).roundToInt(),
+                    offsetX + (line.right * scaleX).roundToInt(),
+                    offsetY + (line.bottom * scaleY).roundToInt()
                 )
             }
-        })
+        }
+        // Don't briefly blank old subtitles while a new line is still translating.
+        if (visible.isEmpty() && latest.isNotEmpty() && lastPublished.isNotEmpty()) return
+        if (!SubtitleChangePolicy.hasChanged(lastPublished, visible)) return
+        lastPublished = visible
+        onOutput(visible)
     }
 
     private fun translateNext() {
@@ -137,7 +157,10 @@ internal class FrameTranslator(
 
     fun clear() {
         latest = emptyList()
-        publish()
+        lastPublished = emptyList()
+        consecutiveEmptyOcrFrames = 0
+        captureBounds = null
+        onOutput(emptyList())
     }
     fun close() {
         closed = true

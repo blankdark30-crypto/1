@@ -49,8 +49,8 @@ internal class OverlayCanvas(context: Context, private val wm: WindowManager) {
     }
 
     fun update(items: List<VisibleTranslation>) { if (attached) layer.render(items) }
-    fun hide() { if (attached) layer.visibility = View.INVISIBLE }
-    fun show() { if (attached) layer.visibility = View.VISIBLE }
+    fun hide() { if (attached && layer.visibility != View.INVISIBLE) layer.visibility = View.INVISIBLE }
+    fun show() { if (attached && layer.visibility != View.VISIBLE) layer.visibility = View.VISIBLE }
     fun clear() { if (attached) layer.render(emptyList()) }
     fun detach() {
         if (attached) {
@@ -72,7 +72,7 @@ internal class OverlayCanvas(context: Context, private val wm: WindowManager) {
         fun render(items: List<VisibleTranslation>) {
             val next = items.take(12)
             // Identical OCR frames should not force another overlay redraw.
-            if (next == labels) return
+            if (!SubtitleChangePolicy.hasChanged(labels, next)) return
             labels = next
             invalidate()
         }
