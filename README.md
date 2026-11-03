@@ -1,4 +1,4 @@
-# 三語遊戲 OCR v0.7 — Persistent subtitles (Android 14+)
+# 三語遊戲 OCR v0.7.1 — Wrapped text/paragraph OCR and persistent subtitles
 
 ## User-specified function
 - User chooses source: English / Korean / Japanese. Output always Chinese converted to Traditional using on-device Transliterator.
@@ -8,6 +8,14 @@
 - Single non-touchable TYPE_ACCESSIBILITY_OVERLAY draws translations near detected positions; draggable control bubble pauses/resumes, long press turns off translation.
 - No hidden autostarts: first-time in-app disclosure, user opt-in, Android system accessibility enable. An accessibility service is managed by Android, not a continuously restarted background foreground service.
 - Existing v0.5 manual text/paste/screenshot selection remains available.
+
+## v0.7.1 wrapped text fixes
+- ML Kit exposes physical text lines separately; group contiguous lines from the same TextBlock before language filtering or translation. Short individual lines ("I", single Hangul/kana) are retained and merged first.
+- Conservative cross-block joining for extremely close, left-aligned continuation lines, with limits of 5 lines and 320 source characters per paragraph; menu columns and lines after terminal punctuation are kept separate.
+- English hyphenated wraps are rejoined, Japanese line wraps concatenate without spaces, English/Korean wraps use word separators. Translate the entire paragraph in one local ML Kit translation request for context.
+- Calculate a union rectangle of source lines and render up to five Chinese subtitle lines, lifting the panel above the bottom edge rather than truncating it at two lines.
+- Keep the v0.7 always-visible subtitle behavior on Android 14+, 2sp-smaller type, 1-second target scan, and no MediaProjection prompt.
+- OCR grouping is heuristic: visually adjacent distinct menu items can still be grouped incorrectly, and exotic fonts may not OCR.
 
 ## v0.7 persistent subtitles
 - **Android 14+ (API 34+)**: use AccessibilityService.takeScreenshotOfWindow(windowId) so the screenshot excludes our accessibility subtitle overlay. On supported window captures, subtitles never hide during the 1-second OCR cycle.

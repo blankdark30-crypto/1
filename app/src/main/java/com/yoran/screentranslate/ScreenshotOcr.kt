@@ -33,20 +33,41 @@ internal class ScreenshotOcr {
             }
             client!!.process(InputImage.fromBitmap(bitmap, 0))
                 .addOnSuccessListener { text ->
-                    val lines = if (closed) emptyList() else text.textBlocks.flatMap { it.lines }
-                        .mapNotNull { line ->
-                            val rect = line.boundingBox ?: return@mapNotNull null
-                            val content = line.text.replace(Regex("\\s+"), " ").trim()
-                            val hasRelevantScript = when (requestedLanguage) {
-                                "ko" -> content.any { it in '\uAC00'..'\uD7A3' }
-                                "ja" -> content.any { it in '\u3040'..'\u30FF' } ||
-                                    content.any { it in '\u4E00'..'\u9FFF' }
-                                else -> content.count { it.isLetter() && it.code < 128 } >= 2
+                    val paragraphs = if (closed) emptyList() else {
+                        val fragments = text.textBlocks.flatMapIndexed { blockIndex, block ->
+                            block.lines.mapNotNull { line ->
+                                val rect = line.boundingBox ?: return@mapNotNull null
+                                val candidate = line.text.replace(Regex("\\s+"), " ").trim()
+                                // Keep even one-character fragments until a paragraph is assembled.
+                                if (candidate.isBlank() || rect.width() < 5 ||
+                                    rect.height() !in 6..250) null
+                                else OcrFragment(
+                                    candidate, rect.left, rect.top,
+                                    rect.right, rect.bottom, blockIndex
+                                )
                             }
-                            if (!hasRelevantScript || content.length !in 2..160 ||
-                                rect.width() < 8 || rect.height() !in 8..250) null
-                            else OcrLine(content,rect.left,rect.top,rect.right,rect.bottom)
-                        }.sortedWith(compareBy({ it.top }, { it.left })).take(12)
+                        }
+                        OcrParagraphAssembler.assemble(fragments, requestedLanguage)
+                            .filter { paragraph ->
+                                val content = paragraph.text
+                                val hasRelevantScript = when (requestedLanguage) {
+                                    "ko" -> content.any { it in '\uAC00'..'\uD7A3' }
+                                    "ja" -> content.any { it in '\u3040'..'\u30FF' } ||
+                                        content.any { it in '\u4E00'..'\u9FFF' }
+                                    else -> content.count {
+                                        it.isLetter() && it.code < 128
+                                    } >= 2
+                                }
+                                hasRelevantScript && content.length in 2..320 &&
+                                    paragraph.right - paragraph.left >= 8 &&
+                                    paragraph.bottom - paragraph.top >= 8
+                            }
+                            .sortedWith(compareBy({ it.top }, { it.left }))
+                            .take(12)
+                    }
+                    val lines = paragraphs.map {
+                        OcrLine(it.text, it.left, it.top, it.right, it.bottom)
+                    }
                     bitmap.recycle()
                     done(OcrFrame(w,h,lines))
                 }
